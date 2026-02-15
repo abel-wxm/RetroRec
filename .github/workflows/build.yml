@@ -1,0 +1,50 @@
+name: RetroRec Cloud Build
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    # 1. 申请一台最新的 Windows 服务器
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    # 2. 恢复 vcpkg 缓存 (为了加速，避免每次都重装 FFmpeg)
+    - name: Restore vcpkg cache
+      uses: actions/cache@v3
+      with:
+        path: |
+          C:/vcpkg/installed
+          C:/vcpkg/packages
+        key: ${{ runner.os }}-vcpkg-ffmpeg-${{ hashFiles('CMakeLists.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-vcpkg-ffmpeg-
+
+    # 3. 配置 vcpkg 环境 & 安装 FFmpeg
+    - name: Setup vcpkg and Install Libraries
+      run: |
+        # GitHub 的 Windows 环境自带 vcpkg，我们直接用
+        vcpkg integrate install
+        # 安装 FFmpeg (如果缓存里有，这就很快；没有的话会编译一阵子)
+        vcpkg install ffmpeg:x64-windows
+
+    # 4. 配置 CMake (告诉它去哪里找库)
+    - name: Configure CMake
+      # 注意：这里指定了工具链文件，让 CMake 能找到 vcpkg 装的库
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release
+
+    # 5. 开始编译 (这一步就是真正的“干活”)
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build --config Release
+
+    # 6. 打包发布 (把生成的 .exe 存起来给你下载)
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: RetroRec-Windows-Release
+        path: ${{github.workspace}}/build/Release/RetroRec.exe
