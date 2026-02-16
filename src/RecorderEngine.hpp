@@ -1,5 +1,5 @@
 // ==========================================
-// VERSION: V1.0_2026-02-16_18-00 (Pre-record & Overlay Fix)
+// VERSION: V1.0_2026-02-16_18-30 (Compile Fix Final)
 // ==========================================
 #pragma once
 
@@ -119,13 +119,15 @@ namespace retrorec {
         std::vector<RectArea> mosaic_zones;
         std::mutex draw_mutex;
 
-        // 回溯视频缓冲 (始终运行)
         std::deque<RawFrame> video_buffer;
-        const int BUFFER_FRAMES = 90; // 3秒
+        const int BUFFER_FRAMES = 90; 
         std::mutex buffer_mutex;
 
         int screen_width = 0;
         int screen_height = 0;
+        
+        // --- 修复点1：补回丢失的 video_pts 变量 ---
+        int64_t video_pts = 0; 
         int64_t audio_samples_written = 0;
         
         std::chrono::steady_clock::time_point start_time;
@@ -242,8 +244,8 @@ namespace retrorec {
             av_frame_get_buffer(raw_frame, 32);
 
             audio_samples_written = 0;
+            video_pts = 0; // Reset video pts
             
-            // 设定开始时间为3秒前 (为了让PTS正确衔接)
             start_time = std::chrono::steady_clock::now() - std::chrono::seconds(3); 
             is_recording = true;
 
@@ -287,8 +289,9 @@ namespace retrorec {
             av_frame_make_writable(raw_frame);
             sws_scale(sws_ctx, src, strides, 0, screen_height, raw_frame->data, raw_frame->linesize);
             
-            // 计算相对时间 PTS
             raw_frame->pts = rf.capture_time_ms * 30 / 1000;
+            // --- 修复点2：更新 video_pts 以便 getDuration 使用 ---
+            video_pts = raw_frame->pts;
 
             avcodec_send_frame(video_ctx, raw_frame);
             AVPacket* pkt = av_packet_alloc();
@@ -302,7 +305,6 @@ namespace retrorec {
         }
 
         void captureFrame() {
-            // 1. 始终抓取画面，存入 Ring Buffer
             DXGI_OUTDUPL_FRAME_INFO frame_info;
             ComPtr<IDXGIResource> res;
             HRESULT hr = dxgi_duplication->AcquireNextFrame(0, &frame_info, &res);
@@ -327,22 +329,16 @@ namespace retrorec {
             
             RawFrame rf;
             rf.data.resize(screen_width * screen_height * 4);
-            
             if (map.RowPitch == screen_width * 4) memcpy(rf.data.data(), map.pData, rf.data.size());
             else for (int y=0; y<screen_height; y++) memcpy(rf.data.data() + y*screen_width*4, (uint8_t*)map.pData + y*map.RowPitch, screen_width*4);
-            
             d3d_context->Unmap(staging_texture.Get(), 0);
 
-            // 记录当前时刻 (相对于启动时间，或录制开始时间)
-            // 简化：使用系统 tick
             static auto sys_start = std::chrono::steady_clock::now();
             auto now = std::chrono::steady_clock::now();
-            
-            // 如果正在录制，PTS 基于 start_time；如果没录制，暂存
             if (is_recording) {
                 rf.capture_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
             } else {
-                rf.capture_time_ms = 0; // 暂存，startRecording 时会修正
+                rf.capture_time_ms = 0;
             }
 
             processFramePixels(rf.data.data(), screen_width * 4);
@@ -359,18 +355,25 @@ namespace retrorec {
                 }
             }
 
-            // 2. 音频直通
             if (is_recording && !is_paused && audio_enabled && audio_ctx) {
                 std::vector<uint8_t> audio_buf;
                 audio_cap.read(audio_buf);
-                // 为了演示，写入静音填充轨道，保证文件结构
                 if (audio_frame) {
                     av_frame_make_writable(audio_frame);
                     audio_frame->pts = audio_samples_written;
                     audio_samples_written += audio_frame->nb_samples;
+                    
+                    // --- 修复点3：兼容新旧 FFmpeg 的通道数获取 ---
+                    int n_channels = 2;
+#if LIBAVCODEC_VERSION_MAJOR >= 60
+                    n_channels = audio_ctx->ch_layout.nb_channels;
+#else
+                    n_channels = audio_ctx->channels;
+#endif
+
                     for (int i=0; i<audio_frame->nb_samples; i++) 
-                        for (int ch=0; ch<audio_ctx->channels; ch++) 
-                            ((float*)audio_frame->data[ch])[i] = 0.0f; // Silent
+                        for (int ch=0; ch<n_channels; ch++) 
+                            ((float*)audio_frame->data[ch])[i] = 0.0f; 
                     
                     avcodec_send_frame(audio_ctx, audio_frame);
                     AVPacket* pkt = av_packet_alloc();
@@ -387,8 +390,6 @@ namespace retrorec {
 
         void stopRecording() {
             if (!is_recording) return;
-            
-            // Flush remaining buffer
             {
                 std::lock_guard<std::mutex> lock(buffer_mutex);
                 while (!video_buffer.empty()) {
@@ -396,7 +397,6 @@ namespace retrorec {
                     video_buffer.pop_front();
                 }
             }
-
             avcodec_send_frame(video_ctx, nullptr);
             if (audio_ctx) avcodec_send_frame(audio_ctx, nullptr);
             av_write_trailer(fmt_ctx);
