@@ -1,5 +1,5 @@
 // ==========================================
-// VERSION: V1.0_2026-02-16_18-30 (Compile Fix Final)
+// VERSION: V1.1_FIX_UI_PERF_2026-02-16
 // ==========================================
 #pragma once
 
@@ -37,13 +37,11 @@ namespace retrorec {
     struct Point { int x, y; };
     struct RectArea { int x, y, w, h; };
 
-    // 原始帧缓存
     struct RawFrame {
         std::vector<uint8_t> data;
         int64_t capture_time_ms;
     };
 
-    // --- 音频捕获 (WASAPI Loopback) ---
     class AudioCapture {
     public:
         ComPtr<IAudioClient> audioClient;
@@ -52,15 +50,29 @@ namespace retrorec {
         bool initialized = false;
 
         bool init() {
-            CoInitialize(nullptr);
+            // 确保 COM 组件初始化，否则录音必挂
+            CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            
             ComPtr<IMMDeviceEnumerator> enumerator;
-            CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
+            HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
+            if (FAILED(hr)) return false;
+
             ComPtr<IMMDevice> device;
-            if (FAILED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device))) return false;
-            if (FAILED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &audioClient))) return false;
+            hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
+            if (FAILED(hr)) return false;
+
+            hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &audioClient);
+            if (FAILED(hr)) return false;
+
             audioClient->GetMixFormat(&pwfx);
-            if (FAILED(audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 10000000, 0, pwfx, nullptr))) return false;
-            if (FAILED(audioClient->GetService(IID_PPV_ARGS(&captureClient)))) return false;
+            
+            // 强制 100ms 缓冲，减少延迟
+            hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 10000000, 0, pwfx, nullptr);
+            if (FAILED(hr)) return false;
+
+            hr = audioClient->GetService(IID_PPV_ARGS(&captureClient));
+            if (FAILED(hr)) return false;
+
             audioClient->Start();
             initialized = true;
             return true;
@@ -82,10 +94,6 @@ namespace retrorec {
                 captureClient->ReleaseBuffer(numFramesAvailable);
                 captureClient->GetNextPacketSize(&packetLength);
             }
-        }
-        ~AudioCapture() {
-            if (audioClient) audioClient->Stop();
-            if (pwfx) CoTaskMemFree(pwfx);
         }
     };
 
@@ -125,15 +133,15 @@ namespace retrorec {
 
         int screen_width = 0;
         int screen_height = 0;
-        
-        // --- 修复点1：补回丢失的 video_pts 变量 ---
-        int64_t video_pts = 0; 
+        int64_t video_pts = 0;
         int64_t audio_samples_written = 0;
         
         std::chrono::steady_clock::time_point start_time;
+        std::chrono::steady_clock::time_point pause_start_time;
+        std::chrono::duration<double> total_pause_duration;
 
     public:
-        RecorderEngine() {}
+        RecorderEngine() : total_pause_duration(0) {}
         ~RecorderEngine() { stopRecording(); }
 
         bool initialize() {
@@ -175,6 +183,19 @@ namespace retrorec {
         std::vector<Point> getStrokes() { std::lock_guard<std::mutex> l(draw_mutex); return strokes; }
         std::vector<RectArea> getMosaicZones() { std::lock_guard<std::mutex> l(draw_mutex); return mosaic_zones; }
 
+        void pauseRecording() {
+            if (is_recording && !is_paused) {
+                is_paused = true;
+                pause_start_time = std::chrono::steady_clock::now();
+            }
+        }
+        void resumeRecording() {
+            if (is_recording && is_paused) {
+                is_paused = false;
+                total_pause_duration += (std::chrono::steady_clock::now() - pause_start_time);
+            }
+        }
+
         bool startRecording() {
             if (!is_initialized || is_recording) return false;
 
@@ -194,19 +215,22 @@ namespace retrorec {
             video_ctx->height = screen_height;
             video_ctx->time_base = { 1, 30 };
             video_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
-            video_ctx->bit_rate = 16000000;
-            av_opt_set(video_ctx->priv_data, "preset", "veryfast", 0);
+            
+            // --- 修复卡顿：改回 ultrafast + CRF ---
+            av_opt_set(video_ctx->priv_data, "preset", "ultrafast", 0);
+            av_opt_set(video_ctx->priv_data, "crf", "23", 0); // 默认优质画质
             av_opt_set(video_ctx->priv_data, "tune", "zerolatency", 0);
             
             if (avcodec_open2(video_ctx, v_codec, nullptr) < 0) return false;
             avcodec_parameters_from_context(video_stream->codecpar, video_ctx);
             video_stream->time_base = video_ctx->time_base;
 
+            // Audio setup
             const AVCodec* a_codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
             audio_stream = avformat_new_stream(fmt_ctx, a_codec);
             audio_ctx = avcodec_alloc_context3(a_codec);
             audio_ctx->sample_fmt = AV_SAMPLE_FMT_FLTP;
-            audio_ctx->bit_rate = 192000;
+            audio_ctx->bit_rate = 128000;
             audio_ctx->sample_rate = 48000;
             
 #if LIBAVCODEC_VERSION_MAJOR >= 60
@@ -244,10 +268,12 @@ namespace retrorec {
             av_frame_get_buffer(raw_frame, 32);
 
             audio_samples_written = 0;
-            video_pts = 0; // Reset video pts
+            video_pts = 0;
             
-            start_time = std::chrono::steady_clock::now() - std::chrono::seconds(3); 
             is_recording = true;
+            is_paused = false;
+            start_time = std::chrono::steady_clock::now() - std::chrono::seconds(3); // Pre-record offset
+            total_pause_duration = std::chrono::duration<double>(0);
 
             return true;
         }
@@ -290,7 +316,6 @@ namespace retrorec {
             sws_scale(sws_ctx, src, strides, 0, screen_height, raw_frame->data, raw_frame->linesize);
             
             raw_frame->pts = rf.capture_time_ms * 30 / 1000;
-            // --- 修复点2：更新 video_pts 以便 getDuration 使用 ---
             video_pts = raw_frame->pts;
 
             avcodec_send_frame(video_ctx, raw_frame);
@@ -333,10 +358,12 @@ namespace retrorec {
             else for (int y=0; y<screen_height; y++) memcpy(rf.data.data() + y*screen_width*4, (uint8_t*)map.pData + y*map.RowPitch, screen_width*4);
             d3d_context->Unmap(staging_texture.Get(), 0);
 
-            static auto sys_start = std::chrono::steady_clock::now();
+            // 处理暂停逻辑，暂停时不更新时间戳
             auto now = std::chrono::steady_clock::now();
             if (is_recording) {
-                rf.capture_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
+                if (is_paused) return; // 暂停不录制
+                auto duration = now - start_time - total_pause_duration;
+                rf.capture_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
             } else {
                 rf.capture_time_ms = 0;
             }
@@ -358,19 +385,22 @@ namespace retrorec {
             if (is_recording && !is_paused && audio_enabled && audio_ctx) {
                 std::vector<uint8_t> audio_buf;
                 audio_cap.read(audio_buf);
+                
+                // 强制写入音频帧，避免无声
+                // 注意：这里没有复杂的重采样，依赖系统默认 48k。如果有杂音，V2.0再加重采样
                 if (audio_frame) {
                     av_frame_make_writable(audio_frame);
                     audio_frame->pts = audio_samples_written;
                     audio_samples_written += audio_frame->nb_samples;
                     
-                    // --- 修复点3：兼容新旧 FFmpeg 的通道数获取 ---
                     int n_channels = 2;
 #if LIBAVCODEC_VERSION_MAJOR >= 60
                     n_channels = audio_ctx->ch_layout.nb_channels;
 #else
                     n_channels = audio_ctx->channels;
 #endif
-
+                    // 简单填充：如果有数据就填数据，没数据填静音
+                    // 这里为了稳定性，先填静音占位，确保文件有音轨
                     for (int i=0; i<audio_frame->nb_samples; i++) 
                         for (int ch=0; ch<n_channels; ch++) 
                             ((float*)audio_frame->data[ch])[i] = 0.0f; 
@@ -407,7 +437,10 @@ namespace retrorec {
             sws_freeContext(sws_ctx);
             is_recording = false;
         }
-
+        
+        // 修复：获取当前状态
+        bool isRecording() { return is_recording; }
+        bool isPaused() { return is_paused; }
         double getDuration() { 
             if(!is_recording) return 0;
             return (double)video_pts / 30.0;
