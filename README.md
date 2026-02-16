@@ -18,6 +18,15 @@ The Result: When you hit "Stop", your video is clean, safe, and ready to upload.
 
 结果： 当你点击“停止”时，你得到的是一个干净、安全、即刻可发布的视频。无需渲染，拒绝二次剪辑。
 
+## 🏗️ Project Status (当前状态)
+The core engine is initialized and stable!
+核心引擎已初始化，构建系统运行完美。
+
+![RetroRec First Run](RetroRec.png)
+
+> *Current State: Environment ready, FFmpeg linked, waiting for DXGI capture logic.*
+> *当前状态：环境已就绪，FFmpeg 已链接，等待注入 DXGI 抓屏逻辑。*
+
 🏗️ Architecture (技术架构)
 We are designing this as a lightweight, native C++ application for Windows, optimized for 0% frame drop.
 
