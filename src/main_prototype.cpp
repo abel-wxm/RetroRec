@@ -21,11 +21,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         // 根据状态显示不同颜色的文字
         std::string msg;
         if (g_engine.isRecording()) {
-            msg = "🔴 RECORDING... (Press F10 to Stop)";
+            msg = "🔴 RECORDING... (Press F12 to Stop)";
             SetTextColor(hdc, RGB(255, 0, 0)); // 红色
         } else {
             msg = g_engine.isReady() 
-                ? "RetroRec v1.0 Ready!\n\n[F9] Start Recording\n[F10] Stop Recording" 
+                ? "RetroRec v0.9 Ready!\n\n[F12] Start/Stop Recording" 
                 : "Initializing GPU... Please Wait";
             SetTextColor(hdc, RGB(0, 0, 0)); // 黑色
         }
@@ -37,21 +37,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     } break;
 
     case WM_KEYDOWN:
-        if (wParam == VK_F9) { // 按下 F9
+        // 改用 F12 作为开始/停止热键 (避开 F10 系统冲突)
+        if (wParam == VK_F12) { 
             if (!g_engine.isRecording()) {
-                // 启动录制，保存为 output.mp4
-                if (g_engine.startRecording("output.mp4")) {
-                    // 强制刷新窗口，让文字变红
-                    InvalidateRect(hWnd, nullptr, TRUE);
+                // 启动录制 (不需要传文件名了，引擎自动生成)
+                if (g_engine.startRecording()) {
+                    InvalidateRect(hWnd, nullptr, TRUE); // 刷新界面变红
                 }
-            }
-        }
-        else if (wParam == VK_F10) { // 按下 F10
-            if (g_engine.isRecording()) {
+            } else {
+                // 停止录制
                 g_engine.stopRecording();
-                // 强制刷新窗口，让文字变回黑色
-                InvalidateRect(hWnd, nullptr, TRUE);
-                MessageBoxA(hWnd, "Video saved successfully to 'output.mp4'", "RetroRec", MB_OK);
+                InvalidateRect(hWnd, nullptr, TRUE); // 刷新界面恢复
+                // 弹窗提示 (这里没法轻易拿到文件名了，就提示已保存)
+                MessageBoxA(hWnd, "Video saved with timestamp!", "RetroRec", MB_OK);
             }
         }
         break;
