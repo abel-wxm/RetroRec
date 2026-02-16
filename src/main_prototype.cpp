@@ -1,5 +1,5 @@
 // ==========================================
-// VERSION: 2026-02-16_14-45 (Fix Build)
+// VERSION: 2026-02-16_15-10 (Fix Size_t Warning)
 // ==========================================
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -124,16 +124,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             SetTextColor(hdc, RGB(0, 0, 0));
         }
 
-        // 使用 TextOutA 替代 DrawTextA 避免任何参数歧义
+        // --- 核心修复：强转 (int) 消除 size_t 警告 ---
         TextOutA(hdc, 15, 10, status.c_str(), (int)status.length());
         
         std::string hint = "";
-        if (g_engine.isPaintMode()) hint = " [PEN MODE]";
+        if (g_engine.isPaintMode()) hint = " [PEN MODE] Draw on screen (Invisible ink)";
         else if (g_engine.isMosaicMode()) hint = " [MOSAIC MODE]";
         
         if (!hint.empty()) {
             SetTextColor(hdc, RGB(0, 0, 200));
-            TextOutA(hdc, 200, 10, hint.c_str(), (int)hint.length());
+            // --- 核心修复：强转 (int) ---
+            TextOutA(hdc, 220, 10, hint.c_str(), (int)hint.length());
         }
 
         DeleteObject(hFont);
@@ -160,7 +161,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
 
     int screenW = GetSystemMetrics(SM_CXSCREEN);
     HWND hWnd = CreateWindowA("RetroRecClass", "RetroRec Toolbar", WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, 
-        (screenW - 600) / 2, 0, 600, 120, nullptr, nullptr, hInstance, nullptr);
+        (screenW - 650) / 2, 0, 650, 120, nullptr, nullptr, hInstance, nullptr);
 
     if (!hWnd) return 0;
 
