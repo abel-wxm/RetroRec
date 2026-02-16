@@ -1,5 +1,5 @@
 // ==========================================
-// VERSION: V1.1_FIX_UI_PERF_2026-02-16
+// VERSION: 2026-02-16_18-45_FIX_COMPILE_ERRORS
 // ==========================================
 #pragma once
 
@@ -50,29 +50,15 @@ namespace retrorec {
         bool initialized = false;
 
         bool init() {
-            // 确保 COM 组件初始化，否则录音必挂
-            CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-            
+            CoInitialize(nullptr);
             ComPtr<IMMDeviceEnumerator> enumerator;
-            HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
-            if (FAILED(hr)) return false;
-
+            CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
             ComPtr<IMMDevice> device;
-            hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
-            if (FAILED(hr)) return false;
-
-            hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &audioClient);
-            if (FAILED(hr)) return false;
-
+            if (FAILED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device))) return false;
+            if (FAILED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &audioClient))) return false;
             audioClient->GetMixFormat(&pwfx);
-            
-            // 强制 100ms 缓冲，减少延迟
-            hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 10000000, 0, pwfx, nullptr);
-            if (FAILED(hr)) return false;
-
-            hr = audioClient->GetService(IID_PPV_ARGS(&captureClient));
-            if (FAILED(hr)) return false;
-
+            if (FAILED(audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 10000000, 0, pwfx, nullptr))) return false;
+            if (FAILED(audioClient->GetService(IID_PPV_ARGS(&captureClient)))) return false;
             audioClient->Start();
             initialized = true;
             return true;
@@ -94,6 +80,10 @@ namespace retrorec {
                 captureClient->ReleaseBuffer(numFramesAvailable);
                 captureClient->GetNextPacketSize(&packetLength);
             }
+        }
+        ~AudioCapture() {
+            if (audioClient) audioClient->Stop();
+            if (pwfx) CoTaskMemFree(pwfx);
         }
     };
 
@@ -133,6 +123,8 @@ namespace retrorec {
 
         int screen_width = 0;
         int screen_height = 0;
+        
+        // [FIX 1] 补回 video_pts
         int64_t video_pts = 0;
         int64_t audio_samples_written = 0;
         
@@ -183,6 +175,39 @@ namespace retrorec {
         std::vector<Point> getStrokes() { std::lock_guard<std::mutex> l(draw_mutex); return strokes; }
         std::vector<RectArea> getMosaicZones() { std::lock_guard<std::mutex> l(draw_mutex); return mosaic_zones; }
 
+        // [FIX 3] 补回 applyRetroactiveMosaic 函数
+        void applyRetroactiveMosaic() {
+            std::lock_guard<std::mutex> l(buffer_mutex);
+            std::lock_guard<std::mutex> dl(draw_mutex);
+            if (mosaic_zones.empty()) return;
+
+            // 简单实现：遍历缓冲区，把当前马赛克应用到所有帧
+            for (auto& frame : video_buffer) {
+                uint8_t* data = frame.data.data();
+                int linesize = screen_width * 4;
+                int bs = 15;
+                for (const auto& r : mosaic_zones) {
+                    for (int y = r.y; y < r.y + r.h; y += bs) {
+                        for (int x = r.x; x < r.x + r.w; x += bs) {
+                            if (y >= screen_height || x >= screen_width) continue;
+                            int off = y * linesize + x * 4;
+                            uint8_t b = data[off];
+                            uint8_t g = data[off+1];
+                            uint8_t r_val = data[off+2];
+                            for (int by = y; by < min(y+bs, r.y+r.h); by++) {
+                                for (int bx = x; bx < min(x+bs, r.x+r.w); bx++) {
+                                    if (by < screen_height && bx < screen_width) {
+                                        int o = by * linesize + bx * 4;
+                                        data[o] = b; data[o+1] = g; data[o+2] = r_val;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         void pauseRecording() {
             if (is_recording && !is_paused) {
                 is_paused = true;
@@ -216,16 +241,14 @@ namespace retrorec {
             video_ctx->time_base = { 1, 30 };
             video_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
             
-            // --- 修复卡顿：改回 ultrafast + CRF ---
             av_opt_set(video_ctx->priv_data, "preset", "ultrafast", 0);
-            av_opt_set(video_ctx->priv_data, "crf", "23", 0); // 默认优质画质
+            av_opt_set(video_ctx->priv_data, "crf", "23", 0);
             av_opt_set(video_ctx->priv_data, "tune", "zerolatency", 0);
             
             if (avcodec_open2(video_ctx, v_codec, nullptr) < 0) return false;
             avcodec_parameters_from_context(video_stream->codecpar, video_ctx);
             video_stream->time_base = video_ctx->time_base;
 
-            // Audio setup
             const AVCodec* a_codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
             audio_stream = avformat_new_stream(fmt_ctx, a_codec);
             audio_ctx = avcodec_alloc_context3(a_codec);
@@ -272,7 +295,7 @@ namespace retrorec {
             
             is_recording = true;
             is_paused = false;
-            start_time = std::chrono::steady_clock::now() - std::chrono::seconds(3); // Pre-record offset
+            start_time = std::chrono::steady_clock::now() - std::chrono::seconds(3);
             total_pause_duration = std::chrono::duration<double>(0);
 
             return true;
@@ -308,144 +331,4 @@ namespace retrorec {
             }
         }
 
-        void encodeAndWrite(const RawFrame& rf) {
-            if (!video_ctx) return;
-            uint8_t* src[] = { (uint8_t*)rf.data.data() };
-            int strides[] = { screen_width * 4 };
-            av_frame_make_writable(raw_frame);
-            sws_scale(sws_ctx, src, strides, 0, screen_height, raw_frame->data, raw_frame->linesize);
-            
-            raw_frame->pts = rf.capture_time_ms * 30 / 1000;
-            video_pts = raw_frame->pts;
-
-            avcodec_send_frame(video_ctx, raw_frame);
-            AVPacket* pkt = av_packet_alloc();
-            while (avcodec_receive_packet(video_ctx, pkt) == 0) {
-                av_packet_rescale_ts(pkt, video_ctx->time_base, video_stream->time_base);
-                pkt->stream_index = video_stream->index;
-                av_interleaved_write_frame(fmt_ctx, pkt);
-                av_packet_unref(pkt);
-            }
-            av_packet_free(&pkt);
-        }
-
-        void captureFrame() {
-            DXGI_OUTDUPL_FRAME_INFO frame_info;
-            ComPtr<IDXGIResource> res;
-            HRESULT hr = dxgi_duplication->AcquireNextFrame(0, &frame_info, &res);
-            if (hr == DXGI_ERROR_WAIT_TIMEOUT) return;
-            if (FAILED(hr)) return;
-
-            ComPtr<ID3D11Texture2D> tex;
-            res.As(&tex);
-            if (!staging_texture) {
-                D3D11_TEXTURE2D_DESC desc;
-                tex->GetDesc(&desc);
-                desc.Usage = D3D11_USAGE_STAGING;
-                desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-                desc.BindFlags = 0; desc.MiscFlags = 0;
-                d3d_device->CreateTexture2D(&desc, nullptr, &staging_texture);
-            }
-            d3d_context->CopyResource(staging_texture.Get(), tex.Get());
-            dxgi_duplication->ReleaseFrame();
-
-            D3D11_MAPPED_SUBRESOURCE map;
-            d3d_context->Map(staging_texture.Get(), 0, D3D11_MAP_READ, 0, &map);
-            
-            RawFrame rf;
-            rf.data.resize(screen_width * screen_height * 4);
-            if (map.RowPitch == screen_width * 4) memcpy(rf.data.data(), map.pData, rf.data.size());
-            else for (int y=0; y<screen_height; y++) memcpy(rf.data.data() + y*screen_width*4, (uint8_t*)map.pData + y*map.RowPitch, screen_width*4);
-            d3d_context->Unmap(staging_texture.Get(), 0);
-
-            // 处理暂停逻辑，暂停时不更新时间戳
-            auto now = std::chrono::steady_clock::now();
-            if (is_recording) {
-                if (is_paused) return; // 暂停不录制
-                auto duration = now - start_time - total_pause_duration;
-                rf.capture_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-            } else {
-                rf.capture_time_ms = 0;
-            }
-
-            processFramePixels(rf.data.data(), screen_width * 4);
-
-            {
-                std::lock_guard<std::mutex> lock(buffer_mutex);
-                video_buffer.push_back(rf);
-                if (video_buffer.size() > BUFFER_FRAMES) {
-                    if (is_recording && !is_paused) {
-                        RawFrame toWrite = video_buffer.front();
-                        encodeAndWrite(toWrite);
-                    }
-                    video_buffer.pop_front();
-                }
-            }
-
-            if (is_recording && !is_paused && audio_enabled && audio_ctx) {
-                std::vector<uint8_t> audio_buf;
-                audio_cap.read(audio_buf);
-                
-                // 强制写入音频帧，避免无声
-                // 注意：这里没有复杂的重采样，依赖系统默认 48k。如果有杂音，V2.0再加重采样
-                if (audio_frame) {
-                    av_frame_make_writable(audio_frame);
-                    audio_frame->pts = audio_samples_written;
-                    audio_samples_written += audio_frame->nb_samples;
-                    
-                    int n_channels = 2;
-#if LIBAVCODEC_VERSION_MAJOR >= 60
-                    n_channels = audio_ctx->ch_layout.nb_channels;
-#else
-                    n_channels = audio_ctx->channels;
-#endif
-                    // 简单填充：如果有数据就填数据，没数据填静音
-                    // 这里为了稳定性，先填静音占位，确保文件有音轨
-                    for (int i=0; i<audio_frame->nb_samples; i++) 
-                        for (int ch=0; ch<n_channels; ch++) 
-                            ((float*)audio_frame->data[ch])[i] = 0.0f; 
-                    
-                    avcodec_send_frame(audio_ctx, audio_frame);
-                    AVPacket* pkt = av_packet_alloc();
-                    while (avcodec_receive_packet(audio_ctx, pkt) == 0) {
-                        av_packet_rescale_ts(pkt, audio_ctx->time_base, audio_stream->time_base);
-                        pkt->stream_index = audio_stream->index;
-                        av_interleaved_write_frame(fmt_ctx, pkt);
-                        av_packet_unref(pkt);
-                    }
-                    av_packet_free(&pkt);
-                }
-            }
-        }
-
-        void stopRecording() {
-            if (!is_recording) return;
-            {
-                std::lock_guard<std::mutex> lock(buffer_mutex);
-                while (!video_buffer.empty()) {
-                    encodeAndWrite(video_buffer.front());
-                    video_buffer.pop_front();
-                }
-            }
-            avcodec_send_frame(video_ctx, nullptr);
-            if (audio_ctx) avcodec_send_frame(audio_ctx, nullptr);
-            av_write_trailer(fmt_ctx);
-            if (!(fmt_ctx->oformat->flags & AVFMT_NOFILE)) avio_closep(&fmt_ctx->pb);
-            avcodec_free_context(&video_ctx);
-            if (audio_ctx) avcodec_free_context(&audio_ctx);
-            avformat_free_context(fmt_ctx);
-            sws_freeContext(sws_ctx);
-            is_recording = false;
-        }
-        
-        // 修复：获取当前状态
-        bool isRecording() { return is_recording; }
-        bool isPaused() { return is_paused; }
-        double getDuration() { 
-            if(!is_recording) return 0;
-            return (double)video_pts / 30.0;
-        }
-        
-        int min(int a, int b) { return a < b ? a : b; }
-    };
-}
+        void encodeAndWrite(const
