@@ -14,35 +14,38 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         RECT rect;
         GetClientRect(hWnd, &rect);
         
-        // 显示操作指南
+        // 显示文字
         std::string msg;
         if (g_engine.isRecording()) {
-            msg = "🔴 RECORDING... (Press F10 to Stop)";
-            SetTextColor(hdc, RGB(255, 0, 0)); // 录制时变红字
+            msg = "RECORDING... (Press F10 to Stop)";
+            SetTextColor(hdc, RGB(255, 0, 0)); // 红字
         } else {
             msg = g_engine.isReady() 
                 ? "RetroRec v1.0 Ready!\n\n[F9] Start Recording\n[F10] Stop Recording" 
                 : "Initializing GPU...";
-            SetTextColor(hdc, RGB(0, 0, 0));
+            SetTextColor(hdc, RGB(0, 0, 0)); // 黑字
         }
         
-        DrawTextA(hdc, msg.c_str(), -1, &rect, DT_CENTER | DT_VCENTER, DT_CENTER);
+        // --- 核心修复在这里 ---
+        // 之前多写了一个逗号，现在改成了正确的 5 个参数
+        DrawTextA(hdc, msg.c_str(), -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE); // 修复了这里
+        
         EndPaint(hWnd, &ps);
     } break;
 
-    case WM_KEYDOWN: // 键盘监听
-        if (wParam == VK_F9) { // 按下 F9
+    case WM_KEYDOWN:
+        if (wParam == VK_F9) { // F9 开始
             if (!g_engine.isRecording()) {
-                // 录制到当前目录下的 output.mp4
+                // 启动录制，保存为 output.mp4
                 if (g_engine.startRecording("output.mp4")) {
-                    InvalidateRect(hWnd, nullptr, TRUE); // 刷新界面文字
+                    InvalidateRect(hWnd, nullptr, TRUE);
                 }
             }
         }
-        else if (wParam == VK_F10) { // 按下 F10
+        else if (wParam == VK_F10) { // F10 停止
             if (g_engine.isRecording()) {
                 g_engine.stopRecording();
-                InvalidateRect(hWnd, nullptr, TRUE); // 刷新界面文字
+                InvalidateRect(hWnd, nullptr, TRUE);
                 MessageBoxA(hWnd, "Video saved to 'output.mp4'", "RetroRec", MB_OK);
             }
         }
@@ -64,18 +67,15 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
 
-    // --- 核心修改：游戏级主循环 ---
-    // 使用 PeekMessage 而不是 GetMessage，这样即使没有鼠标移动，
-    // 我们也能在空闲时间不断调用 g_engine.captureFrame()
+    // 游戏级循环
     MSG msg = {0};
     while (msg.message != WM_QUIT) {
         if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         } else {
-            // 空闲时：如果不忙着处理窗口消息，就去抓屏
             if (g_engine.isRecording()) {
-                g_engine.captureFrame();
+                g_engine.captureFrame(); // 录制时不闲着
             }
         }
     }
