@@ -1,7 +1,11 @@
 // ==========================================
-// VERSION: 2026-02-16_15-10 (Fix Size_t Warning)
+// VERSION: 2026-02-16_15-40 (Button Fix)
 // ==========================================
 #define WIN32_LEAN_AND_MEAN
+// 再次定义，双重保险
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <string>
 #include <iomanip>
@@ -124,16 +128,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             SetTextColor(hdc, RGB(0, 0, 0));
         }
 
-        // --- 核心修复：强转 (int) 消除 size_t 警告 ---
+        // 使用 TextOutA 并强转 int，绝对安全
         TextOutA(hdc, 15, 10, status.c_str(), (int)status.length());
         
         std::string hint = "";
-        if (g_engine.isPaintMode()) hint = " [PEN MODE] Draw on screen (Invisible ink)";
-        else if (g_engine.isMosaicMode()) hint = " [MOSAIC MODE]";
+        if (g_engine.isPaintMode()) hint = " [PEN ON] Draw Red Lines";
+        else if (g_engine.isMosaicMode()) hint = " [MOSAIC ON]";
         
         if (!hint.empty()) {
             SetTextColor(hdc, RGB(0, 0, 200));
-            // --- 核心修复：强转 (int) ---
             TextOutA(hdc, 220, 10, hint.c_str(), (int)hint.length());
         }
 
