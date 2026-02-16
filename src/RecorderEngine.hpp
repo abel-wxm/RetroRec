@@ -1,124 +1,82 @@
-/**
- * RetroRec - Main Engine (The "Brain")
- * * ARCHITECTURE NOTE (v1.0 Intent):
- * This class orchestrates the entire application.
- * It connects the Eyes (DXGI), Heart (RingBuffer), and Hands (Overlay).
- * * * Key Responsibility:
- * Manage the "Async Repair Queue". When a user adds a privacy mask, 
- * this engine spins up a background task to modify the RingBuffer history 
- * WITHOUT blocking the main recording loop.
- */
-
 #pragma once
 
-#include <thread>
-#include <atomic>
-#include <vector>
+#include <windows.h>
+#include <d3d11.h>
+#include <dxgi1_2.h>
 #include <iostream>
+#include <vector>
+#include <wrl/client.h> // 微软智能指针
 
-#include "core/DXGICapture.hpp"
-#include "core/RingBuffer.hpp"
-#include "ui/OverlaySystem.hpp"
+// 使用 ComPtr 自动管理内存，防止内存泄漏
+using Microsoft::WRL::ComPtr;
 
-namespace RetroRec {
-
-    enum class EngineState {
-        IDLE,
-        RECORDING,
-        PAUSED_FOR_EDIT, // The "Firefighting" mode (User pressed Ctrl+Space)
-        STOPPING
-    };
+namespace retrorec {
 
     class RecorderEngine {
     private:
-        // Sub-systems
-        Core::DXGICapturer m_Capturer;
-        Core::RingBuffer m_Buffer;
-        UI::OverlayController m_Overlay;
+        // DirectX 核心变量
+        ComPtr<ID3D11Device> d3d_device;
+        ComPtr<ID3D11DeviceContext> d3d_context;
+        ComPtr<IDXGIOutputDuplication> dxgi_duplication;
+        DXGI_OUTPUT_DESC output_desc;
 
-        // Threading
-        std::atomic<EngineState> m_State;
-        std::thread m_CaptureThread;
-        
-        // Background worker for "Time Travel" processing
-        // We use a vector of threads to handle multiple repair tasks simultaneously if needed
-        std::vector<std::thread> m_RepairWorkers;
+        bool is_initialized = false;
 
     public:
-        RecorderEngine() : m_State(EngineState::IDLE), m_Buffer(30, 3) {
-            // Initialize buffer with 30 FPS * 3 Seconds history
-        }
+        RecorderEngine() = default;
+        ~RecorderEngine() { cleanup(); }
 
-        ~RecorderEngine() {
-            StopRecording();
-        }
+        // 1. 初始化 DirectX (连接显卡)
+        bool initialize() {
+            if (is_initialized) return true;
 
-        // 1. Start the machine
-        void StartRecording() {
-            if (m_State != EngineState::IDLE) return;
-            
-            m_State = EngineState::RECORDING;
-            m_Capturer.Init(); // Wake up the GPU
+            HRESULT hr;
 
-            // Spin up the high-priority capture thread
-            m_CaptureThread = std::thread(&RecorderEngine::CaptureLoop, this);
-            m_CaptureThread.detach();
-            
-            std::cout << "[Engine] Recording Started at 30 FPS." << std::endl;
-        }
+            // 创建 D3D 设备
+            D3D_FEATURE_LEVEL featureLevel;
+            hr = D3D11CreateDevice(
+                nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0,
+                D3D11_SDK_VERSION, &d3d_device, &featureLevel, &d3d_context);
 
-        // 2. The "Left-Hand" Shortcut Trigger (Ctrl+Space)
-        void TogglePause() {
-            if (m_State == EngineState::RECORDING) {
-                m_State = EngineState::PAUSED_FOR_EDIT;
-                m_Overlay.ToggleEditMode(true);
-                std::cout << "[Engine] PAUSED. Overlay Active. Inputs redirected to Draw Tools." << std::endl;
-            } 
-            else if (m_State == EngineState::PAUSED_FOR_EDIT) {
-                m_State = EngineState::RECORDING;
-                m_Overlay.ToggleEditMode(false);
-                std::cout << "[Engine] RESUMED. Audio/Video synced seamlessly." << std::endl;
+            if (FAILED(hr)) return false;
+
+            // 获取 DXGI 设备
+            ComPtr<IDXGIDevice> dxgi_device;
+            hr = d3d_device.As(&dxgi_device);
+            if (FAILED(hr)) return false;
+
+            // 获取显卡适配器
+            ComPtr<IDXGIAdapter> dxgi_adapter;
+            hr = dxgi_device->GetAdapter(&dxgi_adapter);
+            if (FAILED(hr)) return false;
+
+            // 获取显示器 0
+            ComPtr<IDXGIOutput> dxgi_output;
+            hr = dxgi_adapter->EnumOutputs(0, &dxgi_output);
+            if (FAILED(hr)) return false;
+
+            // --- 核心步骤：创建桌面副本 (抓屏源头) ---
+            ComPtr<IDXGIOutput1> dxgi_output1;
+            hr = dxgi_output.As(&dxgi_output1);
+            hr = dxgi_output1->DuplicateOutput(d3d_device.Get(), &dxgi_duplication);
+
+            if (FAILED(hr)) {
+                // 如果这里失败，通常是因为没有显示器连接，或者全屏游戏独占
+                return false;
             }
+
+            dxgi_output->GetDesc(&output_desc);
+            is_initialized = true;
+            return true;
         }
 
-        // 3. The "Time Travel" Command
-        // Call this when user draws a "Blur Rect" and enables the "3s" icon
-        void TriggerRetroactiveRepair(int x, int y, int w, int h) {
-            std::cout << "[Engine] Launching background repair task..." << std::endl;
-
-            // Fire and Forget: Launch a detached thread to fix history
-            // This ensures the UI never freezes.
-            std::thread worker([=]() {
-                // Tell the RingBuffer to rewind 3 seconds and apply blur
-                m_Buffer.ApplyRetroactiveMask(3000, x, y, w, h, 
-                    [](std::vector<uint8_t>& data, int width, int height, int rx, int ry, int rw, int rh) {
-                        // This lambda would call OpenCV::GaussianBlur
-                        // We keep it abstract here to avoid linking OpenCV in this header
-                    });
-            });
-            
-            worker.detach(); // Let it run in background
+        // 清理资源
+        void cleanup() {
+            is_initialized = false;
+            // ComPtr 会自动释放 d3d_device 等资源，无需手动 Release
         }
-
-        void StopRecording() {
-            m_State = EngineState::STOPPING;
-            if (m_CaptureThread.joinable()) m_CaptureThread.join();
-        }
-
-    private:
-        // The main heartbeat loop
-        void CaptureLoop() {
-            while (m_State != EngineState::STOPPING) {
-                if (m_State == EngineState::PAUSED_FOR_EDIT) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                    continue; // Don't write to disk, but maybe keep capturing for preview?
-                }
-
-                // Acquire frame from GPU
-                // Push to RingBuffer
-                // Signal Writer Thread (not implemented in this skeleton)
-                std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 FPS
-            }
-        }
+        
+        // 检查引擎是否就绪
+        bool isReady() const { return is_initialized; }
     };
 }
