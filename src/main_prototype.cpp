@@ -8,27 +8,95 @@
 // 全局引擎
 retrorec::RecorderEngine g_engine;
 
-// --- 状态控制 ---
-bool g_is_counting_down = false;
-int g_countdown_num = 0;
-const UINT_PTR TIMER_ID_COUNTDOWN = 1; 
-const UINT_PTR TIMER_ID_UPDATE_UI = 2; // 用于刷新时间显示
+// UI 控件 ID
+#define IDC_BTN_START 101
+#define IDC_BTN_PAUSE 102
+#define IDC_BTN_STOP  103
+#define IDC_BTN_PAINT 104
+#define IDC_BTN_CLEAR 105
 
-// 辅助函数：把秒数变成 00:00:00
-std::string formatDuration(double seconds) {
-    int total_sec = (int)seconds;
-    int h = total_sec / 3600;
-    int m = (total_sec % 3600) / 60;
-    int s = total_sec % 60;
+// 窗口句柄
+HWND hBtnStart, hBtnPause, hBtnStop, hBtnPaint, hBtnClear;
+
+// 格式化时间
+std::string formatTime(double s) {
+    int total = (int)s;
+    int m = total / 60;
+    int sec = total % 60;
     std::stringstream ss;
-    ss << std::setw(2) << std::setfill('0') << h << ":"
-       << std::setw(2) << std::setfill('0') << m << ":"
-       << std::setw(2) << std::setfill('0') << s;
+    ss << std::setw(2) << std::setfill('0') << m << ":" << std::setw(2) << std::setfill('0') << sec;
     return ss.str();
+}
+
+void UpdateUI(HWND hWnd) {
+    bool rec = g_engine.isRecording();
+    bool paused = g_engine.isPaused();
+    bool paint = g_engine.isPaintMode();
+
+    // 按钮状态控制
+    EnableWindow(hBtnStart, !rec);
+    EnableWindow(hBtnPause, rec);
+    EnableWindow(hBtnStop, rec);
+    
+    // 涂鸦按钮文字变化
+    SetWindowTextA(hBtnPaint, paint ? "Exit Paint" : "Paint Mode");
+    SetWindowTextA(hBtnPause, paused ? "Resume" : "Pause");
+
+    // 强制重绘显示时间
+    InvalidateRect(hWnd, nullptr, FALSE);
 }
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+    case WM_CREATE: {
+        // 创建按钮 (不再是只有文字，有了真正的交互)
+        int y = 50;
+        hBtnStart = CreateWindowA("BUTTON", "Start Rec", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, 
+            10, y, 90, 30, hWnd, (HMENU)IDC_BTN_START, ((LPCREATESTRUCT)lParam)->hInstance, NULL);
+        
+        hBtnPause = CreateWindowA("BUTTON", "Pause", WS_TABSTOP | WS_VISIBLE | WS_CHILD, 
+            110, y, 80, 30, hWnd, (HMENU)IDC_BTN_PAUSE, ((LPCREATESTRUCT)lParam)->hInstance, NULL);
+
+        hBtnStop = CreateWindowA("BUTTON", "Stop", WS_TABSTOP | WS_VISIBLE | WS_CHILD, 
+            200, y, 80, 30, hWnd, (HMENU)IDC_BTN_STOP, ((LPCREATESTRUCT)lParam)->hInstance, NULL);
+
+        hBtnPaint = CreateWindowA("BUTTON", "Paint Mode", WS_TABSTOP | WS_VISIBLE | WS_CHILD, 
+            290, y, 100, 30, hWnd, (HMENU)IDC_BTN_PAINT, ((LPCREATESTRUCT)lParam)->hInstance, NULL);
+            
+        hBtnClear = CreateWindowA("BUTTON", "Clear", WS_TABSTOP | WS_VISIBLE | WS_CHILD, 
+            400, y, 60, 30, hWnd, (HMENU)IDC_BTN_CLEAR, ((LPCREATESTRUCT)lParam)->hInstance, NULL);
+
+        EnableWindow(hBtnPause, FALSE);
+        EnableWindow(hBtnStop, FALSE);
+        SetTimer(hWnd, 1, 1000, NULL); // UI 刷新定时器
+    } break;
+
+    case WM_COMMAND: {
+        int id = LOWORD(wParam);
+        switch (id) {
+        case IDC_BTN_START:
+            if (g_engine.startRecording()) UpdateUI(hWnd);
+            break;
+        case IDC_BTN_PAUSE:
+            if (g_engine.isPaused()) g_engine.resumeRecording();
+            else g_engine.pauseRecording();
+            UpdateUI(hWnd);
+            break;
+        case IDC_BTN_STOP:
+            g_engine.stopRecording();
+            UpdateUI(hWnd);
+            MessageBoxA(hWnd, "Saved!", "RetroRec", MB_OK);
+            break;
+        case IDC_BTN_PAINT:
+            g_engine.setPaintMode(!g_engine.isPaintMode());
+            UpdateUI(hWnd);
+            break;
+        case IDC_BTN_CLEAR:
+            g_engine.clearStrokes();
+            break;
+        }
+    } break;
+
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hWnd, &ps);
@@ -36,111 +104,47 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         GetClientRect(hWnd, &rect);
         
         SetBkMode(hdc, TRANSPARENT);
-        // 使用更清晰的字体
-        HFONT hFont = CreateFont(28, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, TEXT("Segoe UI"));
-        HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
+        HFONT hFont = CreateFont(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, TEXT("Segoe UI"));
+        SelectObject(hdc, hFont);
 
-        std::string msg;
-        
-        if (g_is_counting_down) {
-            // 1. 倒计时状态 (橙色)
-            msg = "Get Ready...\nStarting in  " + std::to_string(g_countdown_num);
-            SetTextColor(hdc, RGB(255, 128, 0)); 
-        } 
-        else if (g_engine.isRecording()) {
+        std::string status;
+        if (g_engine.isRecording()) {
             if (g_engine.isPaused()) {
-                // 2. 暂停状态 (黄色)
-                msg = "⏸️ PAUSED\n" + formatDuration(g_engine.getRecordingDuration()) + "\n(Press F11 to Resume)";
-                SetTextColor(hdc, RGB(200, 200, 0)); 
+                status = "PAUSED - " + formatTime(g_engine.getDuration());
+                SetTextColor(hdc, RGB(200, 200, 0));
             } else {
-                // 3. 录制状态 (红色)
-                msg = "🔴 REC  " + formatDuration(g_engine.getRecordingDuration()) + "\n(F11 Pause / F12 Stop)";
-                SetTextColor(hdc, RGB(220, 0, 0)); 
+                status = "RECORDING - " + formatTime(g_engine.getDuration());
+                SetTextColor(hdc, RGB(255, 0, 0));
             }
-        } 
-        else {
-            // 4. 待机状态 (黑色)
-            msg = "RetroRec v0.95\n\n[F12] Start Recording\n(Auto-Minimize & Countdown)\n\n[F11] Pause/Resume";
+        } else {
+            status = "Ready to Record";
             SetTextColor(hdc, RGB(0, 0, 0));
         }
+
+        // 显示提示文字
+        TextOutA(hdc, 15, 15, status.c_str(), status.length());
         
-        // 绘制文字 (5 参数版本，确保不报错)
-        DrawTextA(hdc, msg.c_str(), -1, &rect, DT_CENTER | DT_VCENTER, DT_CENTER);
-        
-        SelectObject(hdc, hOldFont);
+        // 如果开启了涂鸦模式，显示提示
+        if (g_engine.isPaintMode()) {
+            SetTextColor(hdc, RGB(255, 0, 0));
+            TextOutA(hdc, 300, 15, "[PAINT ON]", 10);
+        }
+
         DeleteObject(hFont);
         EndPaint(hWnd, &ps);
     } break;
 
     case WM_TIMER:
-        if (wParam == TIMER_ID_COUNTDOWN) {
-            g_countdown_num--;
-            if (g_countdown_num <= 0) {
-                // --- 倒计时结束 ---
-                KillTimer(hWnd, TIMER_ID_COUNTDOWN);
-                g_is_counting_down = false;
-                
-                // 1. 自动最小化，防止录到自己
-                ShowWindow(hWnd, SW_MINIMIZE);
-                Sleep(200); // 等动画播完
-                
-                // 2. 开始录制
-                if (g_engine.startRecording()) {
-                    // 开启 UI 刷新 (每秒刷新时间)
-                    SetTimer(hWnd, TIMER_ID_UPDATE_UI, 1000, nullptr);
-                }
-            }
-            InvalidateRect(hWnd, nullptr, TRUE);
-        }
-        else if (wParam == TIMER_ID_UPDATE_UI) {
-            // 录制时刷新界面 (如果窗口被还原，能看到时间在走)
-            if (g_engine.isRecording() && !IsIconic(hWnd)) {
-                InvalidateRect(hWnd, nullptr, TRUE);
-            }
+        if (g_engine.isRecording()) {
+            InvalidateRect(hWnd, nullptr, FALSE); // 刷新时间显示
         }
         break;
 
-    case WM_KEYDOWN:
-        // --- F12: 开始 / 停止 ---
-        if (wParam == VK_F12) { 
-            if (g_engine.isRecording()) {
-                // 停止录制
-                g_engine.stopRecording();
-                KillTimer(hWnd, TIMER_ID_UPDATE_UI);
-                
-                // 自动弹回窗口
-                ShowWindow(hWnd, SW_RESTORE);
-                SetForegroundWindow(hWnd);
-                
-                InvalidateRect(hWnd, nullptr, TRUE);
-                MessageBoxA(hWnd, "Video Saved Successfully!", "RetroRec", MB_OK);
-            } 
-            else if (!g_is_counting_down) {
-                // 启动倒计时
-                g_is_counting_down = true;
-                g_countdown_num = 3;
-                SetTimer(hWnd, TIMER_ID_COUNTDOWN, 1000, nullptr);
-                InvalidateRect(hWnd, nullptr, TRUE);
-            }
-        }
-        // --- F11: 暂停 / 继续 ---
-        else if (wParam == VK_F11) {
-            if (g_engine.isRecording()) {
-                if (g_engine.isPaused()) {
-                    g_engine.resumeRecording();
-                } else {
-                    g_engine.pauseRecording();
-                }
-                InvalidateRect(hWnd, nullptr, TRUE);
-            }
-        }
+    case WM_DESTROY:
+        PostQuitMessage(0);
         break;
 
-    case WM_DESTROY: 
-        PostQuitMessage(0); 
-        break;
-        
-    default: 
+    default:
         return DefWindowProc(hWnd, message, wParam, lParam);
     }
     return 0;
@@ -150,13 +154,18 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     WNDCLASSEXA wcex = { sizeof(WNDCLASSEX), CS_HREDRAW | CS_VREDRAW, WndProc, 0, 0, hInstance, LoadIcon(nullptr, IDI_APPLICATION), LoadCursor(nullptr, IDC_ARROW), (HBRUSH)(COLOR_WINDOW + 1), nullptr, "RetroRecClass", nullptr };
     RegisterClassExA(&wcex);
 
-    HWND hWnd = CreateWindowA("RetroRecClass", "RetroRec v0.95", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, 0, 600, 360, nullptr, nullptr, hInstance, nullptr);
+    // 创建一个扁平的工具栏窗口
+    HWND hWnd = CreateWindowA("RetroRecClass", "RetroRec Toolbar", WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, 
+        100, 100, 500, 140, nullptr, nullptr, hInstance, nullptr);
+
     if (!hWnd) return 0;
 
     g_engine.initialize();
-
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
+
+    // 设置窗口置顶，方便录制时操作
+    SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 
     MSG msg = {0};
     while (msg.message != WM_QUIT) {
@@ -164,12 +173,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         } else {
-            // 空闲时录制
-            if (g_engine.isRecording()) {
-                g_engine.captureFrame();
-            } else {
-                Sleep(1); 
-            }
+            g_engine.captureFrame();
         }
     }
     return (int)msg.wParam;
