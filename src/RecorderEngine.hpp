@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <ctime> // 用于生成时间戳
 
 // FFmpeg 必须用 extern "C" 包裹
 extern "C" {
@@ -85,9 +86,18 @@ namespace retrorec {
         }
 
         // 2. 开始录制
-        bool startRecording(const std::string& filename) {
+        // 2. 开始录制 (修改版：自动文件名 + 高码率)
+        bool startRecording() { // 注意：这里去掉了参数，文件名在内部生成
             if (!is_initialized) return false;
             if (is_recording) return false;
+
+            // --- 生成带时间戳的文件名 (解决覆盖问题) ---
+            time_t now = time(0);
+            tm ltm;
+            localtime_s(&ltm, &now);
+            char time_buffer[30];
+            strftime(time_buffer, 30, "Rec_%Y%m%d_%H%M%S.mp4", &ltm);
+            std::string filename = std::string(time_buffer);
 
             // --- 配置 FFmpeg ---
             avformat_alloc_output_context2(&fmt_ctx, nullptr, nullptr, filename.c_str());
@@ -101,6 +111,13 @@ namespace retrorec {
             codec_ctx->pix_fmt = AV_PIX_FMT_YUV420P;
             codec_ctx->gop_size = 10;
             codec_ctx->max_b_frames = 1;
+
+            // --- 核心修复：设置码率 (解决模糊问题) ---
+            // 2K 分辨率给 8Mbps (8,000,000 bits/s) 比较清晰
+            // 如果是 1080p，给 4Mbps 就够了。这里简单粗暴给个高一点的。
+            codec_ctx->bit_rate = 8000000; 
+            
+            // 打开编码器 (后面的代码保持不变...)
             
             // 打开编码器
             if (avcodec_open2(codec_ctx, codec, nullptr) < 0) return false;
