@@ -1,7 +1,10 @@
 // ==========================================
-// VERSION: 2026-02-16_14-45 (Fix Build)
+// VERSION: 2026-02-16_15-10 (Fix Brace Error)
 // ==========================================
 #pragma once
+
+// 必须放在 windows.h 之前，防止 min/max 宏冲突
+#define NOMINMAX 
 
 #include <windows.h>
 #include <d3d11.h>
@@ -12,9 +15,8 @@
 #include <chrono>
 #include <ctime>
 #include <mutex>
-#include <algorithm> // 必须包含这个
+#include <algorithm> 
 
-// FFmpeg 必须用 extern "C"
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -41,19 +43,18 @@ namespace retrorec {
         AVFormatContext* fmt_ctx = nullptr;
         AVCodecContext* video_ctx = nullptr;
         AVStream* video_stream = nullptr;
-        AVFrame* raw_frame = nullptr;
-        SwsContext* sws_ctx = nullptr;
-
-        // 音频占位 (防止空指针)
+        
         AVCodecContext* audio_ctx = nullptr;
         AVStream* audio_stream = nullptr;
         AVFrame* audio_frame = nullptr;
+        
+        AVFrame* raw_frame = nullptr;
+        SwsContext* sws_ctx = nullptr;
 
         bool is_initialized = false;
         bool is_recording = false;
         bool is_paused = false;
         
-        // 交互状态
         bool paint_mode = false;
         bool mosaic_mode = false;
         
@@ -77,7 +78,8 @@ namespace retrorec {
         bool initialize() {
             if (is_initialized) return true;
             HRESULT hr;
-
+            
+            // 创建 D3D 设备
             hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &d3d_device, nullptr, &d3d_context);
             if (FAILED(hr)) return false;
 
@@ -137,7 +139,6 @@ namespace retrorec {
             video_ctx->gop_size = 10;
             video_ctx->max_b_frames = 0;
             
-            // 无损配置
             av_opt_set(video_ctx->priv_data, "preset", "ultrafast", 0);
             av_opt_set(video_ctx->priv_data, "crf", "18", 0);
             av_opt_set(video_ctx->priv_data, "tune", "zerolatency", 0);
@@ -146,10 +147,73 @@ namespace retrorec {
             avcodec_parameters_from_context(video_stream->codecpar, video_ctx);
             video_stream->time_base = video_ctx->time_base;
 
-            // 音频占位
             const AVCodec* a_codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
             if (a_codec) {
                 audio_stream = avformat_new_stream(fmt_ctx, a_codec);
                 audio_ctx = avcodec_alloc_context3(a_codec);
                 audio_ctx->sample_fmt = a_codec->sample_fmts ? a_codec->sample_fmts[0] : AV_SAMPLE_FMT_FLTP;
-                audio_
+                audio_ctx->bit_rate = 128000;
+                audio_ctx->sample_rate = 44100;
+                audio_ctx->channels = 2;
+                audio_ctx->channel_layout = AV_CH_LAYOUT_STEREO;
+                
+                if (avcodec_open2(audio_ctx, a_codec, nullptr) >= 0) {
+                    avcodec_parameters_from_context(audio_stream->codecpar, audio_ctx);
+                    audio_stream->time_base = { 1, audio_ctx->sample_rate };
+                    audio_frame = av_frame_alloc();
+                    audio_frame->nb_samples = audio_ctx->frame_size;
+                    audio_frame->format = audio_ctx->sample_fmt;
+                    audio_frame->channel_layout = audio_ctx->channel_layout;
+                    av_frame_get_buffer(audio_frame, 0);
+                }
+            }
+
+            if (!(fmt_ctx->oformat->flags & AVFMT_NOFILE)) {
+                if (avio_open(&fmt_ctx->pb, filename.c_str(), AVIO_FLAG_WRITE) < 0) return false;
+            }
+
+            avformat_write_header(fmt_ctx, nullptr);
+
+            sws_ctx = sws_getContext(screen_width, screen_height, AV_PIX_FMT_BGRA,
+                                     screen_width, screen_height, AV_PIX_FMT_YUV420P,
+                                     SWS_BILINEAR, nullptr, nullptr, nullptr);
+            
+            raw_frame = av_frame_alloc();
+            raw_frame->format = video_ctx->pix_fmt;
+            raw_frame->width = screen_width;
+            raw_frame->height = screen_height;
+            av_frame_get_buffer(raw_frame, 32);
+
+            video_pts = 0;
+            audio_pts = 0;
+            is_recording = true;
+            is_paused = false;
+            total_pause_duration = std::chrono::duration<double>(0);
+            start_time = std::chrono::steady_clock::now();
+
+            return true;
+        }
+
+        void pauseRecording() {
+            if (is_recording && !is_paused) {
+                is_paused = true;
+                pause_start_time = std::chrono::steady_clock::now();
+            }
+        }
+
+        void resumeRecording() {
+            if (is_recording && is_paused) {
+                is_paused = false;
+                total_pause_duration += (std::chrono::steady_clock::now() - pause_start_time);
+            }
+        }
+
+        // --- 核心：像素处理函数 (确保花括号对齐) ---
+        void processFrame(uint8_t* data, int linesize) {
+            std::lock_guard<std::mutex> lock(draw_mutex);
+
+            // 1. 马赛克处理
+            int blockSize = 15; 
+            for (const auto& rect : mosaic_zones) {
+                int startX = std::max(0, rect.x);
+                int startY
