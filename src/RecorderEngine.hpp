@@ -1,14 +1,11 @@
 // ==========================================
-// VERSION: 2026-02-16_15-40 (Structure Fix)
+// VERSION: 2026-02-16_16-30 (Video Only - Fix Build)
 // ==========================================
 #pragma once
 
-// 强制定义宏，防止 Windows.h 里的 min/max 干扰标准库
+// 防止 Windows 宏冲突
 #ifndef NOMINMAX
 #define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
 #endif
 
 #include <windows.h>
@@ -49,9 +46,10 @@ namespace retrorec {
         AVCodecContext* video_ctx = nullptr;
         AVStream* video_stream = nullptr;
         
-        AVCodecContext* audio_ctx = nullptr;
-        AVStream* audio_stream = nullptr;
-        AVFrame* audio_frame = nullptr;
+        // --- 音频部分暂时移除，防止 FFmpeg 版本冲突 ---
+        // AVCodecContext* audio_ctx = nullptr;
+        // AVStream* audio_stream = nullptr;
+        // AVFrame* audio_frame = nullptr;
         
         AVFrame* raw_frame = nullptr;
         SwsContext* sws_ctx = nullptr;
@@ -70,7 +68,6 @@ namespace retrorec {
         int screen_width = 0;
         int screen_height = 0;
         int64_t video_pts = 0;
-        int64_t audio_pts = 0;
 
         std::chrono::steady_clock::time_point start_time;
         std::chrono::steady_clock::time_point pause_start_time;
@@ -108,9 +105,8 @@ namespace retrorec {
 
             is_initialized = true;
             return true;
-        } // END initialize
+        }
 
-        // --- 控制接口 ---
         void togglePaintMode() { paint_mode = !paint_mode; mosaic_mode = false; }
         void toggleMosaicMode() { mosaic_mode = !mosaic_mode; paint_mode = false; }
         bool isPaintMode() const { return paint_mode; }
@@ -144,7 +140,6 @@ namespace retrorec {
             video_ctx->gop_size = 10;
             video_ctx->max_b_frames = 0;
             
-            // 无损参数
             av_opt_set(video_ctx->priv_data, "preset", "ultrafast", 0);
             av_opt_set(video_ctx->priv_data, "crf", "18", 0);
             av_opt_set(video_ctx->priv_data, "tune", "zerolatency", 0);
@@ -153,27 +148,8 @@ namespace retrorec {
             avcodec_parameters_from_context(video_stream->codecpar, video_ctx);
             video_stream->time_base = video_ctx->time_base;
 
-            // 音频占位
-            const AVCodec* a_codec = avcodec_find_encoder(AV_CODEC_ID_AAC);
-            if (a_codec) {
-                audio_stream = avformat_new_stream(fmt_ctx, a_codec);
-                audio_ctx = avcodec_alloc_context3(a_codec);
-                audio_ctx->sample_fmt = a_codec->sample_fmts ? a_codec->sample_fmts[0] : AV_SAMPLE_FMT_FLTP;
-                audio_ctx->bit_rate = 128000;
-                audio_ctx->sample_rate = 44100;
-                audio_ctx->channels = 2;
-                audio_ctx->channel_layout = AV_CH_LAYOUT_STEREO;
-                if (avcodec_open2(audio_ctx, a_codec, nullptr) >= 0) {
-                    avcodec_parameters_from_context(audio_stream->codecpar, audio_ctx);
-                    audio_stream->time_base = { 1, audio_ctx->sample_rate };
-                    audio_frame = av_frame_alloc();
-                    audio_frame->nb_samples = audio_ctx->frame_size;
-                    audio_frame->format = audio_ctx->sample_fmt;
-                    audio_frame->channel_layout = audio_ctx->channel_layout;
-                    av_frame_get_buffer(audio_frame, 0);
-                }
-            }
-
+            // --- 音频初始化代码已移除 ---
+            
             if (!(fmt_ctx->oformat->flags & AVFMT_NOFILE)) {
                 if (avio_open(&fmt_ctx->pb, filename.c_str(), AVIO_FLAG_WRITE) < 0) return false;
             }
@@ -191,14 +167,13 @@ namespace retrorec {
             av_frame_get_buffer(raw_frame, 32);
 
             video_pts = 0;
-            audio_pts = 0;
             is_recording = true;
             is_paused = false;
             total_pause_duration = std::chrono::duration<double>(0);
             start_time = std::chrono::steady_clock::now();
 
             return true;
-        } // END startRecording
+        }
 
         void pauseRecording() {
             if (is_recording && !is_paused) {
@@ -261,7 +236,7 @@ namespace retrorec {
                     }
                 }
             }
-        } // END processFrame
+        }
 
         void handleInput() {
             if (!is_recording || is_paused) return;
@@ -275,8 +250,7 @@ namespace retrorec {
             if (lbtn && paint_mode) {
                 strokes.push_back({mx, my});
             }
-            // 为了安全，暂时移除复杂的拖拽逻辑，只保留点按涂鸦
-        } // END handleInput
+        }
 
         void captureFrame() {
             if (!is_recording || is_paused) return;
@@ -291,6 +265,7 @@ namespace retrorec {
 
             ComPtr<ID3D11Texture2D> gpu_texture;
             desktop_resource.As(&gpu_texture);
+            
             if (!staging_texture) {
                 D3D11_TEXTURE2D_DESC desc;
                 gpu_texture->GetDesc(&desc);
@@ -329,32 +304,21 @@ namespace retrorec {
                 av_packet_unref(pkt);
             }
             av_packet_free(&pkt);
-
-            if (audio_ctx && audio_frame) {
-                av_frame_make_writable(audio_frame);
-                audio_frame->pts = audio_pts;
-                audio_pts += audio_frame->nb_samples;
-                avcodec_send_frame(audio_ctx, audio_frame);
-                while (avcodec_receive_packet(audio_ctx, pkt) == 0) {
-                    av_packet_rescale_ts(pkt, audio_ctx->time_base, audio_stream->time_base);
-                    pkt->stream_index = audio_stream->index;
-                    av_interleaved_write_frame(fmt_ctx, pkt);
-                    av_packet_unref(pkt);
-                }
-            }
-        } // END captureFrame
+            
+            // --- 音频编码代码已移除 ---
+        }
 
         void stopRecording() {
             if (!is_recording) return;
             avcodec_send_frame(video_ctx, nullptr);
-            if (audio_ctx) avcodec_send_frame(audio_ctx, nullptr);
+            // if (audio_ctx) avcodec_send_frame(audio_ctx, nullptr); // Removed
             av_write_trailer(fmt_ctx);
             if (fmt_ctx && !(fmt_ctx->oformat->flags & AVFMT_NOFILE)) avio_closep(&fmt_ctx->pb);
             avcodec_free_context(&video_ctx);
-            if (audio_ctx) avcodec_free_context(&audio_ctx);
+            // if (audio_ctx) avcodec_free_context(&audio_ctx); // Removed
             avformat_free_context(fmt_ctx);
             av_frame_free(&raw_frame);
-            av_frame_free(&audio_frame);
+            // av_frame_free(&audio_frame); // Removed
             sws_freeContext(sws_ctx);
             is_recording = false;
         }
@@ -370,4 +334,4 @@ namespace retrorec {
         bool isPaused() const { return is_paused; }
         void cleanup() { staging_texture.Reset(); }
     };
-} // END namespace
+}
