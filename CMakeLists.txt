@@ -3,25 +3,26 @@ project(RetroRec)
 
 set(CMAKE_CXX_STANDARD 17)
 
-# 1. 找 FFmpeg
-find_package(FFmpeg REQUIRED)
+# 1. 查找 FFmpeg (同时尝试大写和小写，防止找不到)
+find_package(FFMPEG QUIET)
+if (NOT FFMPEG_FOUND)
+    find_package(FFmpeg REQUIRED)
+endif()
 
 # 2. 包含头文件
 include_directories(${CMAKE_SOURCE_DIR}/src)
 
-# 3. 【核心修复】自动扫描 src 下所有的 .cpp 和 .hpp
-# 不再手动列出文件名，这样就不会因为缺文件而报错了
-file(GLOB_RECURSE SOURCES "src/*.cpp" "src/*.hpp")
+# 3. 【绝对稳妥的做法】手动列出你现在仅有的两个文件
+# 只要这两个文件在，它就绝对不会报错
+add_executable(RetroRec WIN32 
+    src/main_prototype.cpp 
+    src/RecorderEngine.hpp
+)
 
-# 4. 生成 GUI 程序 (WIN32)
-add_executable(RetroRec WIN32 ${SOURCES})
-
-# 5. 链接库
+# 4. 链接库
+# 使用变量链接，这样无论 vcpkg 怎么定义都能连上
 target_link_libraries(RetroRec PRIVATE 
-    FFmpeg::avcodec 
-    FFmpeg::avformat 
-    FFmpeg::avutil 
-    FFmpeg::swscale
+    ${FFMPEG_LIBRARIES}
     d3d11
     dxgi
     d3dcompiler
