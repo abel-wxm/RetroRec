@@ -1,5 +1,5 @@
 // ==========================================
-// VERSION: 2026-02-16_22-56_FIX_FINAL
+// VERSION: 2026-02-16_22-59_FIX_FINAL
 // ==========================================
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
@@ -71,4 +71,17 @@ LRESULT CALLBACK ToolbarProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
 }
 
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
-    WNDCLASSEX wc1 = { sizeof(WNDCLASSEX), CS_HREDRAW|CS_VREDRAW, ToolbarProc, 0,0
+    WNDCLASSEX wc1 = { sizeof(WNDCLASSEX), CS_HREDRAW|CS_VREDRAW, ToolbarProc, 0,0, hInstance, 0, LoadCursor(0, IDC_ARROW), (HBRUSH)(COLOR_WINDOW+1), 0, "ToolbarClass", 0 };
+    RegisterClassEx(&wc1);
+    WNDCLASSEX wc2 = { sizeof(WNDCLASSEX), CS_HREDRAW|CS_VREDRAW, OverlayProc, 0,0, hInstance, 0, LoadCursor(0, IDC_ARROW), 0, 0, "OverlayClass", 0 };
+    RegisterClassEx(&wc2);
+    int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN), w = 460, h = 100;
+    hToolbar = CreateWindowEx(WS_EX_TOPMOST, "ToolbarClass", "RetroRec V1.1", WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, (sw-w)/2, 100, w, h, 0, 0, hInstance, 0);
+    ShowWindow(hToolbar, SW_SHOW);
+    hOverlay = CreateWindowEx(WS_EX_TOPMOST|WS_EX_LAYERED|WS_EX_TOOLWINDOW, "OverlayClass", "", WS_POPUP, 0,0, sw, sh, hToolbar, 0, hInstance, 0);
+    SetLayeredWindowAttributes(hOverlay, 0, 0, LWA_COLORKEY);
+    ShowWindow(hOverlay, SW_SHOW);
+    g_engine.initialize();
+    MSG msg; while (GetMessage(&msg, 0,0,0)) { TranslateMessage(&msg); DispatchMessage(&msg); g_engine.captureFrame(); }
+    return (int)msg.wParam;
+}
