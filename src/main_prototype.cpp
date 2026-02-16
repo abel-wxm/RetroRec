@@ -1,53 +1,75 @@
-/**
- * RetroRec - Core Prototype Skeleton
- * This file demonstrates the intended logic for the Ring Buffer and Retroactive Masking.
- * NOTE: This is a conceptual draft. Needs a proper build environment (VS2022 + OpenCV/FFmpeg).
- */
-
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <string>
 #include <iostream>
-#include <deque>
-#include <mutex>
-#include <vector>
 
-// Simulated Frame Structure
-struct VideoFrame {
-    int frameID;
-    long long timestamp;
-    std::vector<unsigned char> pixelData; // Raw YUV or RGB
-};
+// 暂时先把引擎关掉，先测试窗口能不能弹出来
+// #include "RecorderEngine.hpp" 
 
-class RingBuffer {
-private:
-    std::deque<VideoFrame> buffer;
-    const int MAX_FRAMES = 90; // 3 seconds @ 30fps
-    std::mutex mtx;
-
-public:
-    // Push a new frame into the buffer
-    void push(VideoFrame frame) {
-        std::lock_guard<std::mutex> lock(mtx);
-        buffer.push_back(frame);
-        if (buffer.size() > MAX_FRAMES) {
-            buffer.pop_front();
+// ============================================================================
+// 窗口过程回调函数 (Window Procedure)
+// ============================================================================
+LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch (message)
+    {
+    case WM_PAINT:
+        {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hWnd, &ps);
+            RECT rect;
+            GetClientRect(hWnd, &rect);
+            // 在屏幕中间画一行字
+            DrawTextA(hdc, "RetroRec - GUI Mode Activated!\n(Waiting for DirectX...)", -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            EndPaint(hWnd, &ps);
         }
+        break;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        break;
+    default:
+        return DefWindowProc(hWnd, message, wParam, lParam);
     }
-
-    // The Magic Function: Apply blur to history
-    void applyRetroactiveBlur(int x, int y, int w, int h) {
-        std::lock_guard<std::mutex> lock(mtx);
-        std::cout << "[System] Applying Gaussian Blur to past " << buffer.size() << " frames..." << std::endl;
-        
-        // Pseudo-code logic for applying blur:
-        // for (auto& frame : buffer) {
-        //     OpenCV::GaussianBlur(frame.roi(x, y, w, h));
-        // }
-        
-        std::cout << "[System] Retroactive Privacy Protection Complete." << std::endl;
-    }
-};
-
-int main() {
-    std::cout << "RetroRec Engine Initialized..." << std::endl;
-    std::cout << "Waiting for Contributors to build the DXGI Capture module!" << std::endl;
     return 0;
+}
+
+// ============================================================================
+// WinMain: 程序的入口
+// ============================================================================
+int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
+                     _In_opt_ HINSTANCE hPrevInstance,
+                     _In_ LPWSTR    lpCmdLine,
+                     _In_ int       nCmdShow)
+{
+    // 1. 注册窗口类
+    WNDCLASSEXW wcex = {0};
+    wcex.cbSize = sizeof(WNDCLASSEX);
+    wcex.style          = CS_HREDRAW | CS_VREDRAW;
+    wcex.lpfnWndProc    = WndProc;
+    wcex.hInstance      = hInstance;
+    wcex.hCursor        = LoadCursor(nullptr, IDC_ARROW);
+    wcex.hbrBackground  = (HBRUSH)(COLOR_WINDOW+1);
+    wcex.lpszClassName  = L"RetroRecWindowClass";
+
+    if (!RegisterClassExW(&wcex)) return 0;
+
+    // 2. 创建窗口
+    HWND hWnd = CreateWindowW(L"RetroRecWindowClass", L"RetroRec - Early Access", WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, 0, 800, 600, nullptr, nullptr, hInstance, nullptr);
+
+    if (!hWnd) return 0;
+
+    // 3. 显示窗口
+    ShowWindow(hWnd, nCmdShow);
+    UpdateWindow(hWnd);
+
+    // 4. 启动消息循环 (让窗口一直显示，不再闪退)
+    MSG msg;
+    while (GetMessage(&msg, nullptr, 0, 0))
+    {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    return (int) msg.wParam;
 }
