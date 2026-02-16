@@ -1,3 +1,6 @@
+// ==========================================
+// VERSION: 2026-02-16_14-45 (Fix Build)
+// ==========================================
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <string>
@@ -7,7 +10,6 @@
 
 retrorec::RecorderEngine g_engine;
 
-// UI 控件 ID
 #define IDC_BTN_START 101
 #define IDC_BTN_PAUSE 102
 #define IDC_BTN_STOP  103
@@ -122,19 +124,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             SetTextColor(hdc, RGB(0, 0, 0));
         }
 
-        // --- 修复点：DrawTextA 只传 5 个参数 ---
-        // 之前错误的写法可能是 DrawTextA(..., color) 导致报错
-        DrawTextA(hdc, status.c_str(), -1, &rect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+        // 使用 TextOutA 替代 DrawTextA 避免任何参数歧义
+        TextOutA(hdc, 15, 10, status.c_str(), (int)status.length());
         
         std::string hint = "";
         if (g_engine.isPaintMode()) hint = " [PEN MODE]";
         else if (g_engine.isMosaicMode()) hint = " [MOSAIC MODE]";
         
         if (!hint.empty()) {
-            RECT hintRect = rect;
-            hintRect.left += 150; 
             SetTextColor(hdc, RGB(0, 0, 200));
-            DrawTextA(hdc, hint.c_str(), -1, &hintRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+            TextOutA(hdc, 200, 10, hint.c_str(), (int)hint.length());
         }
 
         DeleteObject(hFont);
