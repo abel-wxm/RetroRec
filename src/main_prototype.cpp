@@ -2,12 +2,13 @@
 #include <windows.h>
 #include <string>
 #include <iostream>
+#include "RecorderEngine.hpp" // 引入刚才写的引擎
 
-// 暂时先把引擎关掉，先测试窗口能不能弹出来
-// #include "RecorderEngine.hpp" 
+// 全局引擎实例
+retrorec::RecorderEngine g_engine;
 
 // ============================================================================
-// 窗口过程回调函数 (Window Procedure)
+// 窗口回调函数
 // ============================================================================
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -19,8 +20,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             HDC hdc = BeginPaint(hWnd, &ps);
             RECT rect;
             GetClientRect(hWnd, &rect);
-            // 在屏幕中间画一行字
-            DrawTextA(hdc, "RetroRec - GUI Mode Activated!\n(Waiting for DirectX...)", -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            
+            // 核心逻辑：根据引擎状态显示不同的文字
+            const char* msg = g_engine.isReady() 
+                ? "RetroRec v1.0 Ready!\n[DXGI Capture Initialized Successfully]" 
+                : "Initializing GPU... (Check your monitor)";
+                
+            DrawTextA(hdc, msg, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             EndPaint(hWnd, &ps);
         }
         break;
@@ -28,13 +34,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         PostQuitMessage(0);
         break;
     default:
-        return DefWindowProc(hWnd, message, wParam, lParam);
+        return DefWindowProcW(hWnd, message, wParam, lParam);
     }
     return 0;
 }
 
 // ============================================================================
-// WinMain: 程序的入口
+// 程序入口
 // ============================================================================
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
@@ -54,16 +60,19 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     if (!RegisterClassExW(&wcex)) return 0;
 
     // 2. 创建窗口
-    HWND hWnd = CreateWindowW(L"RetroRecWindowClass", L"RetroRec - Early Access", WS_OVERLAPPEDWINDOW,
+    HWND hWnd = CreateWindowW(L"RetroRecWindowClass", L"RetroRec v1.0", WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, 0, 800, 600, nullptr, nullptr, hInstance, nullptr);
 
     if (!hWnd) return 0;
 
-    // 3. 显示窗口
+    // 3. 尝试初始化引擎 (这会触发 DXGI 抓屏初始化)
+    g_engine.initialize();
+
+    // 4. 显示窗口
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
 
-    // 4. 启动消息循环 (让窗口一直显示，不再闪退)
+    // 5. 消息循环
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0))
     {
